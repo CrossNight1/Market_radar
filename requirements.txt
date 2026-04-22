@@ -1,0 +1,17 @@
+shiny
+shinywidgets
+pandas
+numpy
+faicons
+plotly
+scipy
+requests
+pyarrow
+fastparquet
+python-dotenv
+statsmodels
+scikit-learn
+matplotlib
+seaborn
+arch
+numba
