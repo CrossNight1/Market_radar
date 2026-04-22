@@ -1,9 +1,19 @@
-# Ignore compiled Python files
-*.pyc
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+*.so
 
-# Ignore log files
+# Data and Cache
+data_cache/
 *.log
 
-# Ignore specific directories
-data_cache/
+# OS
+.DS_Store
 
+# IDEs
+.vscode/
+.idea/

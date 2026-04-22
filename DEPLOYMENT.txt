@@ -17,16 +17,26 @@ sudo apt install python3-venv python3-pip git screen -y
 brew install python screen
 ```
 
+### Windows 10/11
+1. Download and install **Python 3.9+** from [python.org](https://www.python.org/downloads/) (ensure "Add Python to PATH" is checked).
+2. Install **Git** from [git-scm.com](https://git-scm.com/).
+
 ## 2. Application Setup
 
 ### Clone and Environment
 ```bash
+# Clone the repository
 git clone <repository-url> market_radar
 cd market_radar
 
+# --- Linux / macOS ---
 python3 -m venv .venv
 source .venv/bin/activate
-pip install --upgrade pip
+pip install -r requirements.txt
+
+# --- Windows ---
+python -m venv .venv
+.venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
@@ -40,10 +50,19 @@ screen -S market_radar
 ```
 
 ### Run the app
-Inside the screen session, activate the venv and start the server:
+Inside the screen session (Linux/Mac) or a standard terminal (Windows):
+
+**Linux / macOS:**
 ```bash
 source .venv/bin/activate
 shiny run --host 0.0.0.0 --port 8000 app.py
+```
+
+**Windows:**
+Double-click `start.bat` or run:
+```powershell
+.venv\Scripts\activate
+shiny run --port 8000 app.py
 ```
 
 ### Detach and Exit
