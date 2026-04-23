@@ -112,7 +112,7 @@ def server(input, output, session):
             for sym in symbols:
                 # Remove 'USDT' for clean Binance symbol if needed, or keep as is
                 # TradingView expects BINANCE:BTCUSDT
-                url = f"{TRADINGVIEW_URL}?symbol=BINANCE:{sym}&interval={tv_int}"
+                url = f"{TRADINGVIEW_URL}?symbol=BINANCE:{sym}.P&interval={tv_int}"
                 webbrowser.open(url)
         
         ui.update_selectize("quick_symbol", selected=[])

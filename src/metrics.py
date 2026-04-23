@@ -82,53 +82,63 @@ def nb_vama(close, vol_vama, targetVol, maMin):
     return vamaC
 
 @nb.njit
-def nb_calc_slopes_and_scores(close, high, low, ph, pl, slope_up, slope_down, atr_14, len_up, len_down, k=0.1):
+def nb_calc_slopes_and_scores(close, ph, pl, slope_up, slope_down, atr_smoothed, vamaC, length_up, length_down, k=3.0, eps=0.2):
     n = len(close)
-    upper = np.zeros(n)
-    lower = np.zeros(n)
-    slope_ph = np.zeros(n)
-    slope_pl = np.zeros(n)
+    upper = np.full(n, np.nan)
+    lower = np.full(n, np.nan)
+    slope_ph = np.full(n, np.nan)
+    slope_pl = np.full(n, np.nan)
     
-    d_up = np.zeros(n)
-    d_down = np.zeros(n)
-    
-    has_ph = False
-    has_pl = False
+    score_up = np.zeros(n)
+    score_down = np.zeros(n)
     
     for i in range(1, n):
         is_ph = not np.isnan(ph[i])
         is_pl = not np.isnan(pl[i])
         
-        if is_ph: has_ph = True
-        if is_pl: has_pl = True
-        
-        c_slope_up = slope_up[i] if not np.isnan(slope_up[i]) else 0.0
-        c_slope_down = slope_down[i] if not np.isnan(slope_down[i]) else 0.0
-        
-        slope_ph[i] = c_slope_up if is_ph else slope_ph[i-1]
-        slope_pl[i] = c_slope_down if is_pl else slope_pl[i-1]
-        
-        upper[i] = ph[i] if is_ph else (upper[i-1] - slope_ph[i] if i > 0 else 0.0)
-        lower[i] = pl[i] if is_pl else (lower[i-1] + slope_pl[i] if i > 0 else 0.0)
+        # Update slopes on pivots
+        if is_ph:
+            slope_ph[i] = slope_up[i]
+            upper[i] = ph[i]
+        else:
+            slope_ph[i] = slope_ph[i-1]
+            upper[i] = upper[i-1]
+            
+        if is_pl:
+            slope_pl[i] = slope_down[i]
+            lower[i] = pl[i]
+        else:
+            slope_pl[i] = slope_pl[i-1]
+            lower[i] = lower[i-1]
+            
+        # Immediate Propagation (Regime Reset logic)
+        if not np.isnan(upper[i]):
+            upper[i] = upper[i] - (slope_ph[i] if not np.isnan(slope_ph[i]) else 0.0)
+            
+        if not np.isnan(lower[i]):
+            lower[i] = lower[i] + (slope_pl[i] if not np.isnan(slope_pl[i]) else 0.0)
+            
+        # Lag compensation
+        upper_proj = upper[i] - (slope_ph[i] * length_up if not np.isnan(slope_ph[i]) else 0.0)
+        lower_proj = lower[i] + (slope_pl[i] * length_down if not np.isnan(slope_pl[i]) else 0.0)
         
         c = close[i]
-        a = atr_14[i] if not np.isnan(atr_14[i]) and atr_14[i] != 0 else 1.0
+        a = atr_smoothed[i] if not np.isnan(atr_smoothed[i]) and atr_smoothed[i] != 0 else 1.0
         
-        # Only score if we have at least one pivot to define the trendline
-        if has_ph and c > upper[i]:
-            d_up[i] = (c - (upper[i] - slope_ph[i])) / a
-        else:
-            d_up[i] = 0
+        # Unbounded proximity score calculation
+        if not np.isnan(upper_proj):
+            dist_up = abs(c - upper_proj) / a
+            s_up = np.exp(-k * dist_up**2) * (1.0 / (dist_up + eps))
+            if not np.isnan(vamaC[i]) and c <= vamaC[i]: s_up = 0.0
+            score_up[i] = s_up
             
-        if has_pl and c < lower[i]:
-            d_down[i] = ((lower[i] + slope_pl[i]) - c) / a
-        else:
-            d_down[i] = 0
+        if not np.isnan(lower_proj):
+            dist_down = abs(c - lower_proj) / a
+            s_down = np.exp(-k * dist_down**2) * (1.0 / (dist_down + eps))
+            if not np.isnan(vamaC[i]) and c >= vamaC[i]: s_down = 0.0
+            score_down[i] = s_down
             
-    bku_score = d_up * np.exp(-k * d_up * d_up)
-    bkd_score = d_down * np.exp(-k * d_down * d_down)
-    
-    return 0.5 * bku_score, 0.5 * bkd_score
+    return score_up, score_down
 
 class MetricsEngine:
     """Calculates metrics from price data using vectorized operations."""
@@ -436,10 +446,14 @@ class MetricsEngine:
                 res['rel_strength_z'] = res['rel_strength_z'].fillna(0)
 
         # 273. Breakout Score
-        if should_calc('breakout_score'):
-            # Use fixed 10 for pivot detection (as in original script) but window for volatility
-            bku, bkd = MetricsEngine.calculate_breakout_score(df, len_up=10, len_down=10, period=window)
-            res['breakout_score'] = bku - bkd
+        if should_calc('breakout_score') or should_calc('breakout_score_change'):
+            # Use fixed 30 for pivot detection (matching new Pine script default) and window for volatility
+            bku, bkd = MetricsEngine.calculate_breakout_score(df, len_up=30, len_down=30, period=window)
+            b_score = bku - bkd
+            if should_calc('breakout_score'):
+                res['breakout_score'] = b_score
+            if should_calc('breakout_score_change'):
+                res['breakout_score_change'] = b_score.diff().fillna(0)
 
         return res
 
@@ -623,49 +637,46 @@ class MetricsEngine:
 
     @staticmethod
     def calculate_breakout_score(df: pd.DataFrame, 
-                                 len_up: int = 10, len_down: int = 10, 
-                                 mult_base: float = 1.0, calcMethod: str = "Stdev",
+                                 len_up: int = 30, len_down: int = 30, 
+                                 mult_base: float = 1.0, calcMethod: str = "Atr",
                                  maMin: int = 10, period: int = 50,
-                                 volFactor: float = 0.15, k_decay: float = 0.02) -> tuple:
+                                 volFactor: float = 0.15, k_decay: float = 3.0, eps: float = 0.2) -> tuple:
         """
-        Calculates optimized breakout trendline score using Numba.
-        Returns: score_up, score_down (as pd.Series)
+        Calculates updated breakout trendline score matching "Regime Reset" PineScript logic.
         """
         close = df['close'].values.astype(float)
         high = df['high'].values.astype(float)
         low = df['low'].values.astype(float)
         n = len(close)
         
-        # Relaxed length check
-        if n < max(len_up, len_down, 20):
+        if n < max(len_up, len_down, period):
             return pd.Series(0.0, index=df.index), pd.Series(0.0, index=df.index)
 
-        # 1. TR & ATR
+        # 1. Smoothed ATR for normalization (sma(atr(14), 10))
         tr = np.zeros_like(close)
         tr[0] = high[0] - low[0]
         for i in range(1, n):
             tr[i] = max(high[i] - low[i], abs(high[i] - close[i-1]), abs(low[i] - close[i-1]))
         
+        atr_14 = nb_rma(tr, 14)
+        atr_smoothed = pd.Series(atr_14).rolling(10, min_periods=1).mean().values
+        
         atr_len_up = nb_rma(tr, len_up)
         atr_len_down = nb_rma(tr, len_down)
-        atr_14 = nb_rma(tr, 14)
         
-        # 2. VAMA
+        # 2. VAMA calculation
         logret = np.zeros_like(close)
         with np.errstate(divide='ignore', invalid='ignore'):
             logret[1:] = np.log(close[1:] / close[:-1])
         logret = np.nan_to_num(logret)
         
-        # Use min_periods to allow calculation with less data
         vol_vama = pd.Series(logret).rolling(period, min_periods=min(period, 10)).std(ddof=0).values
-        
-        # Dynamic target volatility window
         t_vol_window = min(n, period * 30)
         targetVol = pd.Series(logret).rolling(t_vol_window, min_periods=min(t_vol_window, 20)).std(ddof=0).values * volFactor
         
         vamaC = nb_vama(close, vol_vama, targetVol, maMin)
 
-        # 3. Slopes
+        # 3. Slopes & Adaptive Mult
         vr = np.ones(n)
         valid_vr = (vol_vama > 0) & (targetVol > 0)
         vr[valid_vr] = vol_vama[valid_vr] / targetVol[valid_vr]
@@ -692,7 +703,6 @@ class MetricsEngine:
             bar_index = np.arange(n)
             s_close = pd.Series(close)
             s_idx = pd.Series(bar_index)
-            
             sma_src_n_up = (s_close * s_idx).rolling(len_up).mean().values
             sma_src_up = s_close.rolling(len_up).mean().values
             sma_n_up = s_idx.rolling(len_up).mean().values
@@ -707,9 +717,9 @@ class MetricsEngine:
             var_safe_down = np.where(var_n_down == 0, 1.0, var_n_down)
             slope_down = np.abs(sma_src_n_down - sma_src_down * sma_n_down) / var_safe_down / 2 * mult_dyn
 
-        # 4. Final Scores
+        # 4. Score Calculation
         score_up, score_down = nb_calc_slopes_and_scores(
-            close, high, low, ph, pl, slope_up, slope_down, atr_14, len_up, len_down, k_decay
+            close, ph, pl, slope_up, slope_down, atr_smoothed, vamaC, len_up, len_down, k_decay, eps
         )
         
         return pd.Series(score_up, index=df.index).fillna(0), pd.Series(score_down, index=df.index).fillna(0)

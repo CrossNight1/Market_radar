@@ -80,6 +80,7 @@ METRIC_LABELS = {
     'avg_drawdown': 'Average Drawdown',
     'rel_strength_z': 'Relative Strength (Z)',
     'breakout_score': 'Breakout Score',
+    'breakout_score_change': 'Breakout Change',
     'orderbook_imbalance': 'OBook Imbalance',
     'spread': 'Spread',
     'None': 'None'
@@ -88,7 +89,7 @@ METRIC_LABELS = {
 # List of all available numeric metrics for axes
 ALL_METRICS = [
     'rel_strength_z',
-    'breakout_score',    
+    'breakout_score', 'breakout_score_change',
     'price_zscore', 'vam',
     'volatility','vol_imbalance', 'fip', 'ewva', 
     'rsi_norm', 'cmf', 'imbalance_bar', 'volume_imbalance', 'vol_rank',
@@ -97,7 +98,7 @@ ALL_METRICS = [
 
 DEFAULT_FEATURES = [
     'rel_strength_z',
-    'breakout_score',    
+    'breakout_score', 'breakout_score_change',
     'price_zscore', 'vam',
     'volatility','vol_imbalance', 'fip', 'ewva', 
     'rsi_norm', 'cmf', 'imbalance_bar', 'volume_imbalance', 'vol_rank',

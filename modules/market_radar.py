@@ -70,7 +70,7 @@ def market_radar_ui():
                 "z_axis",
                 "Z Axis",
                 choices={"None": "None", **{m: METRIC_LABELS.get(m, m) for m in ALL_METRICS}},
-                selected='volatility'
+                selected='volume_imbalance'
             ),
 
             # ----- LOG SCALE (single row) -----
