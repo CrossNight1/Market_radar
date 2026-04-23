@@ -82,7 +82,7 @@ def nb_vama(close, vol_vama, targetVol, maMin):
     return vamaC
 
 @nb.njit
-def nb_calc_slopes_and_scores(close, ph, pl, slope_up, slope_down, atr_smoothed, vamaC, length_up, length_down, k=3.0, eps=0.2):
+def nb_calc_slopes_and_scores(close, ph, pl, slope_up, slope_down, atr_smoothed, vamaC, length_up, length_down, k=2.0, eps=0.2):
     n = len(close)
     upper = np.full(n, np.nan)
     lower = np.full(n, np.nan)
@@ -125,17 +125,15 @@ def nb_calc_slopes_and_scores(close, ph, pl, slope_up, slope_down, atr_smoothed,
         c = close[i]
         a = atr_smoothed[i] if not np.isnan(atr_smoothed[i]) and atr_smoothed[i] != 0 else 1.0
         
-        # Unbounded proximity score calculation
+        # Unbounded proximity score calculation (Gating moved outside for smoothing)
         if not np.isnan(upper_proj):
             dist_up = abs(c - upper_proj) / a
             s_up = np.exp(-k * dist_up**2) * (1.0 / (dist_up + eps))
-            if not np.isnan(vamaC[i]) and c <= vamaC[i]: s_up = 0.0
             score_up[i] = s_up
             
         if not np.isnan(lower_proj):
             dist_down = abs(c - lower_proj) / a
             s_down = np.exp(-k * dist_down**2) * (1.0 / (dist_down + eps))
-            if not np.isnan(vamaC[i]) and c >= vamaC[i]: s_down = 0.0
             score_down[i] = s_down
             
     return score_up, score_down
@@ -638,9 +636,9 @@ class MetricsEngine:
     @staticmethod
     def calculate_breakout_score(df: pd.DataFrame, 
                                  len_up: int = 30, len_down: int = 30, 
-                                 mult_base: float = 1.0, calcMethod: str = "Atr",
+                                 mult_base: float = 0.5, calcMethod: str = "Atr",
                                  maMin: int = 10, period: int = 50,
-                                 volFactor: float = 0.15, k_decay: float = 3.0, eps: float = 0.2) -> tuple:
+                                 volFactor: float = 0.15, k_decay: float = 2.0, eps: float = 0.2) -> tuple:
         """
         Calculates updated breakout trendline score matching "Regime Reset" PineScript logic.
         """
@@ -676,14 +674,15 @@ class MetricsEngine:
         
         vamaC = nb_vama(close, vol_vama, targetVol, maMin)
 
-        # 3. Slopes & Adaptive Mult
-        vr = np.ones(n)
-        valid_vr = (vol_vama > 0) & (targetVol > 0)
-        vr[valid_vr] = vol_vama[valid_vr] / targetVol[valid_vr]
+        # 3. Slopes & Adaptive Mult (Updated logic)
+        vol_sma = pd.Series(vol_vama).rolling(len_up, min_periods=1).mean().values
+        vr_mult = np.ones(n)
+        mask = vol_sma > 0
+        vr_mult[mask] = vol_vama[mask] / vol_sma[mask]
         
-        beta = 0.5
-        mult_dyn = mult_base * np.power(vr, -beta)
-        mult_dyn = np.clip(mult_dyn, mult_base * 0.5, mult_base * 2.0)
+        beta_mult = 0.7
+        mult_dyn = mult_base * np.power(vr_mult, -beta_mult)
+        mult_dyn = np.clip(mult_dyn, mult_base * 0.1, mult_base * 5.0)
         
         ph = nb_pivots(high, len_up, len_up, True)
         pl = nb_pivots(low, len_down, len_down, False)
@@ -718,11 +717,22 @@ class MetricsEngine:
             slope_down = np.abs(sma_src_n_down - sma_src_down * sma_n_down) / var_safe_down / 2 * mult_dyn
 
         # 4. Score Calculation
-        score_up, score_down = nb_calc_slopes_and_scores(
+        score_up_raw, score_down_raw = nb_calc_slopes_and_scores(
             close, ph, pl, slope_up, slope_down, atr_smoothed, vamaC, len_up, len_down, k_decay, eps
         )
         
-        return pd.Series(score_up, index=df.index).fillna(0), pd.Series(score_down, index=df.index).fillna(0)
+        # 5. Smoothing & Gating
+        s_up = pd.Series(score_up_raw).ewm(span=3, adjust=False).mean()
+        s_down = pd.Series(score_down_raw).ewm(span=3, adjust=False).mean()
+        
+        # Hard VAMA Gating
+        vama_c_s = pd.Series(vamaC)
+        close_s = pd.Series(close)
+        
+        s_up = np.where(close_s > vama_c_s, s_up, 0.0)
+        s_down = np.where(close_s < vama_c_s, s_down, 0.0)
+        
+        return pd.Series(s_up, index=df.index).fillna(0), pd.Series(s_down, index=df.index).fillna(0)
 
     @staticmethod
     def calculate_fip(returns: np.ndarray) -> float:
@@ -850,7 +860,8 @@ class MetricsEngine:
                            benchmark_symbol: str = 'BTCUSDT', 
                            benchmark_returns: Optional[pd.Series] = None, 
                            benchmark_prices: Optional[pd.Series] = None,
-                           window: int = 40) -> pd.DataFrame:
+                           window: int = 40,
+                           daily_prices: Optional[Dict[str, pd.DataFrame]] = None) -> pd.DataFrame:
         """
         Main pipeline to compute metrics for all symbols.
         """
@@ -889,6 +900,20 @@ class MetricsEngine:
                 adv_df = self.calculate_all_indicators(df, window=window, benchmark_returns=benchmark_returns, benchmark_prices=benchmark_prices, interval=interval)
                 latest_adv = adv_df.iloc[-1].to_dict()
                 
+                # Daily Breakout Score Logic
+                if interval == '1d':
+                    latest_adv['breakout_score_1d'] = latest_adv.get('breakout_score', 0.0)
+                elif daily_prices and symbol in daily_prices:
+                    df_1d = daily_prices[symbol]
+                    if df_1d is not None and not df_1d.empty:
+                        # Use fixed window of 30 for daily score if appropriate, or match the input window
+                        bku_1d, bkd_1d = MetricsEngine.calculate_breakout_score(df_1d, len_up=30, len_down=30, period=window)
+                        latest_adv['breakout_score_1d'] = (bku_1d - bkd_1d).iloc[-1]
+                    else:
+                        latest_adv['breakout_score_1d'] = 0.0
+                else:
+                    latest_adv['breakout_score_1d'] = 0.0
+
                 row = {
                     'symbol': symbol,
                     'count': len(prices)

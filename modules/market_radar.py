@@ -272,6 +272,14 @@ def market_radar_server(input, output, session, global_interval):
                         df = manager.load_data(sym, interval)
                         # We need at least window * 30 candles for the breakout score volatility logic
                         df = df.tail(filter_window * 40)
+                        
+                        df_1d = None
+                        if interval != '1d':
+                            # Load daily data for breakout_score_1d
+                            df_1d = manager.load_data(sym, '1d')
+                            if df_1d is not None and not df_1d.empty:
+                                df_1d = df_1d.tail(filter_window * 40)
+                        
                         if df is not None and not df.empty:
                             return engine.compute_all_metrics(
                                 {sym: df}, 
@@ -279,7 +287,8 @@ def market_radar_server(input, output, session, global_interval):
                                 benchmark_symbol=BENCHMARK_SYMBOL,
                                 benchmark_returns=benchmark_returns,
                                 benchmark_prices=b_close,
-                                window=filter_window
+                                window=filter_window,
+                                daily_prices={sym: df_1d} if df_1d is not None else None
                             )
                     except Exception as e:
                         logger.log("Market Radar", "ERROR", f"Error computing {sym}: {e}")
