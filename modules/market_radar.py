@@ -63,7 +63,7 @@ def market_radar_ui():
                 "y_axis",
                 "Y Axis",
                 choices={m: METRIC_LABELS.get(m, m) for m in ALL_METRICS},
-                selected='breakout_score'
+                selected='breakout_score_v2'
             ),
 
             ui.input_select(

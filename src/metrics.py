@@ -82,15 +82,24 @@ def nb_vama(close, vol_vama, targetVol, maMin):
     return vamaC
 
 @nb.njit
-def nb_calc_slopes_and_scores(close, ph, pl, slope_up, slope_down, atr_smoothed, vamaC, length_up, length_down, k=2.0, eps=0.2):
+def nb_calc_slopes_and_scores(close, ph, pl, slope_up, slope_down, atr_smoothed, vamaC, length_up, length_down, 
+                              k=2.0, eps=0.2, persistBars=3):
     n = len(close)
     upper = np.full(n, np.nan)
     lower = np.full(n, np.nan)
     slope_ph = np.full(n, np.nan)
     slope_pl = np.full(n, np.nan)
     
-    score_up = np.zeros(n)
-    score_down = np.zeros(n)
+    upper_proj = np.full(n, np.nan)
+    lower_proj = np.full(n, np.nan)
+    
+    score_up_dist = np.zeros(n)
+    score_down_dist = np.zeros(n)
+    score_up_break = np.zeros(n)
+    score_down_break = np.zeros(n)
+    
+    last_valid_up = -1
+    last_valid_down = -1
     
     for i in range(1, n):
         is_ph = not np.isnan(ph[i])
@@ -118,25 +127,54 @@ def nb_calc_slopes_and_scores(close, ph, pl, slope_up, slope_down, atr_smoothed,
         if not np.isnan(lower[i]):
             lower[i] = lower[i] + (slope_pl[i] if not np.isnan(slope_pl[i]) else 0.0)
             
-        # Lag compensation
-        upper_proj = upper[i] - (slope_ph[i] * length_up if not np.isnan(slope_ph[i]) else 0.0)
-        lower_proj = lower[i] + (slope_pl[i] * length_down if not np.isnan(slope_pl[i]) else 0.0)
+        # Projections
+        upper_proj[i] = upper[i] - (slope_ph[i] * length_up if not np.isnan(slope_ph[i]) else 0.0)
+        lower_proj[i] = lower[i] + (slope_pl[i] * length_down if not np.isnan(slope_pl[i]) else 0.0)
         
         c = close[i]
         a = atr_smoothed[i] if not np.isnan(atr_smoothed[i]) and atr_smoothed[i] != 0 else 1.0
         
-        # Unbounded proximity score calculation (Gating moved outside for smoothing)
-        if not np.isnan(upper_proj):
-            dist_up = abs(c - upper_proj) / a
-            s_up = np.exp(-k * dist_up**2) * (1.0 / (dist_up + eps))
-            score_up[i] = s_up
+        # Origin Distance Logic
+        if not np.isnan(upper_proj[i]):
+            dist_up = abs(c - upper_proj[i]) / a
+            score_up_dist[i] = np.exp(-k * dist_up**2) * (1.0 / (dist_up + eps))
             
-        if not np.isnan(lower_proj):
-            dist_down = abs(c - lower_proj) / a
-            s_down = np.exp(-k * dist_down**2) * (1.0 / (dist_down + eps))
-            score_down[i] = s_down
+        if not np.isnan(lower_proj[i]):
+            dist_down = abs(c - lower_proj[i]) / a
+            score_down_dist[i] = np.exp(-k * dist_down**2) * (1.0 / (dist_down + eps))
             
-    return score_up, score_down
+        # Breakout Logic (Simplified)
+        break_up = False
+        if i > 0 and not np.isnan(upper_proj[i-1]) and not np.isnan(upper_proj[i]):
+            if close[i-1] <= upper_proj[i-1] and close[i] > upper_proj[i]:
+                break_up = True
+                
+        break_down = False
+        if i > 0 and not np.isnan(lower_proj[i-1]) and not np.isnan(lower_proj[i]):
+            if close[i-1] >= lower_proj[i-1] and close[i] < lower_proj[i]:
+                break_down = True
+                
+        # Validated breaks (Simplified)
+        raw_mom = close[i] - close[i-1]
+        valid_break_up = break_up and raw_mom > 0 and close[i] > vamaC[i]
+        valid_break_down = break_down and raw_mom < 0 and close[i] < vamaC[i]
+        
+        if valid_break_up:
+            last_valid_up = i
+        if valid_break_down:
+            last_valid_down = i
+            
+        if last_valid_up != -1 and (i - last_valid_up) < persistBars:
+            score_up_break[i] = 1.0
+        else:
+            score_up_break[i] = 0.0
+            
+        if last_valid_down != -1 and (i - last_valid_down) < persistBars:
+            score_down_break[i] = 1.0
+        else:
+            score_down_break[i] = 0.0
+            
+    return score_up_dist, score_down_dist, score_up_break, score_down_break
 
 class MetricsEngine:
     """Calculates metrics from price data using vectorized operations."""
@@ -444,14 +482,30 @@ class MetricsEngine:
                 res['rel_strength_z'] = res['rel_strength_z'].fillna(0)
 
         # 273. Breakout Score
-        if should_calc('breakout_score') or should_calc('breakout_score_change'):
-            # Use fixed 30 for pivot detection (matching new Pine script default) and window for volatility
-            bku, bkd = MetricsEngine.calculate_breakout_score(df, len_up=30, len_down=30, period=window)
-            b_score = bku - bkd
+        if should_calc('breakout_score_v1') or should_calc('breakout_score_v2') or should_calc('breakout_score_v1_change') or should_calc('breakout_score_v2_change') or should_calc('breakout_score') or should_calc('breakout_score_change') or should_calc('breakout_score_dist') or should_calc('breakout_score_break'):
+            bku_dist, bkd_dist, bku_break, bkd_break = MetricsEngine.calculate_breakout_score(df, len_up=30, len_down=30, period=window)
+            
+            b_score_v1 = bku_dist - bkd_dist
+            b_score_v2 = bku_break - bkd_break
+            
+            if should_calc('breakout_score_v1'):
+                res['breakout_score_v1'] = b_score_v1
+            if should_calc('breakout_score_v2'):
+                res['breakout_score_v2'] = b_score_v2
+            if should_calc('breakout_score_v1_change'):
+                res['breakout_score_v1_change'] = b_score_v1.diff().fillna(0)
+            if should_calc('breakout_score_v2_change'):
+                res['breakout_score_v2_change'] = b_score_v2.diff().fillna(0)
+                
+            # Keep old keys for compatibility
+            if should_calc('breakout_score_dist'):
+                res['breakout_score_dist'] = b_score_v1
+            if should_calc('breakout_score_break'):
+                res['breakout_score_break'] = b_score_v2
             if should_calc('breakout_score'):
-                res['breakout_score'] = b_score
+                res['breakout_score'] = b_score_v2
             if should_calc('breakout_score_change'):
-                res['breakout_score_change'] = b_score.diff().fillna(0)
+                res['breakout_score_change'] = b_score_v2.diff().fillna(0)
 
         return res
 
@@ -717,22 +771,25 @@ class MetricsEngine:
             slope_down = np.abs(sma_src_n_down - sma_src_down * sma_n_down) / var_safe_down / 2 * mult_dyn
 
         # 4. Score Calculation
-        score_up_raw, score_down_raw = nb_calc_slopes_and_scores(
-            close, ph, pl, slope_up, slope_down, atr_smoothed, vamaC, len_up, len_down, k_decay, eps
+        score_up_dist, score_down_dist, score_up_break, score_down_break = nb_calc_slopes_and_scores(
+            close, ph, pl, slope_up, slope_down, atr_smoothed, vamaC, len_up, len_down,
+            k_decay, eps, persistBars=3
         )
         
-        # 5. Smoothing & Gating
-        s_up = pd.Series(score_up_raw).ewm(span=3, adjust=False).mean()
-        s_down = pd.Series(score_down_raw).ewm(span=3, adjust=False).mean()
+        # Apply smoothing and gating to distance metrics
+        s_up_dist = pd.Series(score_up_dist).ewm(span=3, adjust=False).mean()
+        s_down_dist = pd.Series(score_down_dist).ewm(span=3, adjust=False).mean()
         
-        # Hard VAMA Gating
         vama_c_s = pd.Series(vamaC)
         close_s = pd.Series(close)
         
-        s_up = np.where(close_s > vama_c_s, s_up, 0.0)
-        s_down = np.where(close_s < vama_c_s, s_down, 0.0)
+        s_up_dist = np.where(close_s > vama_c_s, s_up_dist, 0.0)
+        s_down_dist = np.where(close_s < vama_c_s, s_down_dist, 0.0)
         
-        return pd.Series(s_up, index=df.index).fillna(0), pd.Series(s_down, index=df.index).fillna(0)
+        return (pd.Series(s_up_dist, index=df.index).fillna(0), 
+                pd.Series(s_down_dist, index=df.index).fillna(0),
+                pd.Series(score_up_break, index=df.index).fillna(0),
+                pd.Series(score_down_break, index=df.index).fillna(0))
 
     @staticmethod
     def calculate_fip(returns: np.ndarray) -> float:
@@ -901,17 +958,25 @@ class MetricsEngine:
                 latest_adv = adv_df.iloc[-1].to_dict()
                 
                 # Daily Breakout Score Logic
+                # Daily Breakout Score Logic
                 if interval == '1d':
-                    latest_adv['breakout_score_1d'] = latest_adv.get('breakout_score', 0.0)
+                    latest_adv['breakout_score_v1_1d'] = latest_adv.get('breakout_score_v1', 0.0)
+                    latest_adv['breakout_score_v2_1d'] = latest_adv.get('breakout_score_v2', 0.0)
+                    latest_adv['breakout_score_1d'] = latest_adv.get('breakout_score_v2', 0.0)
                 elif daily_prices and symbol in daily_prices:
                     df_1d = daily_prices[symbol]
                     if df_1d is not None and not df_1d.empty:
-                        # Use fixed window of 30 for daily score if appropriate, or match the input window
-                        bku_1d, bkd_1d = MetricsEngine.calculate_breakout_score(df_1d, len_up=30, len_down=30, period=window)
-                        latest_adv['breakout_score_1d'] = (bku_1d - bkd_1d).iloc[-1]
+                        bku_dist_1d, bkd_dist_1d, bku_break_1d, bkd_break_1d = MetricsEngine.calculate_breakout_score(df_1d, len_up=30, len_down=30, period=window)
+                        latest_adv['breakout_score_v1_1d'] = (bku_dist_1d - bkd_dist_1d).iloc[-1]
+                        latest_adv['breakout_score_v2_1d'] = (bku_break_1d - bkd_break_1d).iloc[-1]
+                        latest_adv['breakout_score_1d'] = (bku_break_1d - bkd_break_1d).iloc[-1]
                     else:
+                        latest_adv['breakout_score_v1_1d'] = 0.0
+                        latest_adv['breakout_score_v2_1d'] = 0.0
                         latest_adv['breakout_score_1d'] = 0.0
                 else:
+                    latest_adv['breakout_score_v1_1d'] = 0.0
+                    latest_adv['breakout_score_v2_1d'] = 0.0
                     latest_adv['breakout_score_1d'] = 0.0
 
                 row = {

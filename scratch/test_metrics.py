@@ -23,18 +23,14 @@ def test_breakout_score():
     })
     
     try:
-        score_up, score_down = engine.calculate_breakout_score(df)
-        print(f"Calculation successful. Result length: {len(score_up)}")
-        print(f"Latest Score Up: {score_up.iloc[-1]:.4f}")
-        print(f"Latest Score Down: {score_down.iloc[-1]:.4f}")
+        score_up_dist, score_down_dist, score_up_break, score_down_break = engine.calculate_breakout_score(df)
+        print(f"Calculation successful. Result length: {len(score_up_dist)}")
+        print(f"Max Score Up (Dist): {score_up_dist.max():.4f}")
+        print(f"Max Score Down (Dist): {score_down_dist.max():.4f}")
+        print(f"Max Score Up (Break): {score_up_break.max():.4f}")
+        print(f"Max Score Down (Break): {score_down_break.max():.4f}")
         
-        # Verify gating: if close < vamaC, score_up should be 0
-        # We need to calculate vamaC to check
-        # For simplicity, let's just check if scores are ever non-zero
-        print(f"Max Score Up: {score_up.max():.4f}")
-        print(f"Max Score Down: {score_down.max():.4f}")
-        
-        if score_up.max() > 0 or score_down.max() > 0:
+        if score_up_dist.max() > 0 or score_up_break.max() > 0:
             print("SUCCESS: Scores generated and non-zero.")
         else:
             print("WARNING: All scores are zero. This might be expected for random data but double check.")
